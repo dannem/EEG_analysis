@@ -696,18 +696,18 @@ def load_to_epochs_perc(fnames, event_ids, im_times, filt):
     import mne
     import numpy as np
     import os.path as op
-    #from mne.channels import make_standard_montage
+    from mne.channels import make_standard_montage
     get_ipython().run_line_magic('run', 'general_tools.ipynb')
     baseline = (None, 0)
     
    
-    #montage = make_standard_montage('biosemi64')
+    montage = make_standard_montage('biosemi64')
     
     epochs = []
     for fname in fnames:
         #fname = op.join(infolder,fname) 
         raw = mne.io.read_raw_bdf(fname, preload=True).filter(filt[0], filt[1], method='iir')
-        #raw.set_montage(montage)
+        raw.set_montage(montage)
         events = mne.find_events(raw, initial_event=True, 
                                  consecutive=True, shortest_event=1, verbose=0)
         temp = mne.Epochs(raw, events, event_ids, im_times[0], im_times[1],
@@ -750,42 +750,47 @@ def compute_time(folder, subs, filt, im_times, event_ids, n_perm, n_pseudo):
         n_time = X.shape[2]
         cv = CV(y, n_iter=n_perm, n_pseudo=n_pseudo)
         result = np.full((n_perm, n_conditions, n_conditions,n_time), np.nan)
-        
-         
         for f, (train_indices, test_indices) in enumerate(cv.split(X)):
-            print('\tPermutation %g / %g' % (f + 1, n_perm))
+                    print('\tPermutation %g / %g' % (f + 1, n_perm))
 
-            # 1. Compute pseudo-trials for training and test
-            Xpseudo_train = np.full((len(train_indices), n_sensors, n_time), np.nan)
-            Xpseudo_test = np.full((len(test_indices), n_sensors, n_time), np.nan)
-            for i, ind in enumerate(train_indices):
-                Xpseudo_train[i, :, :] = np.mean(X[ind, :, :], axis=0)
-            for i, ind in enumerate(test_indices):
-                Xpseudo_test[i, :, :] = np.mean(X[ind, :, :], axis=0)
+                    # 1. Compute pseudo-trials for training and test
+                    Xpseudo_train = np.full((len(train_indices), n_sensors, n_time), np.nan)
+                    Xpseudo_test = np.full((len(test_indices), n_sensors, n_time), np.nan)
+                    for i, ind in enumerate(train_indices):
+                        Xpseudo_train[i, :, :] = np.mean(X[ind, :, :], axis=0)
+                    for i, ind in enumerate(test_indices):
+                        Xpseudo_test[i, :, :] = np.mean(X[ind, :, :], axis=0)
 
 
-            # 2. Whitening using the Epoch method
-            sigma_conditions = cv.labels_pseudo_train[0, :, n_pseudo-1:].flatten()
-            sigma_ = np.empty((n_conditions, n_sensors, n_sensors))
-            for k,c in enumerate(np.unique(y)):
-                # compute sigma for each time point, then average across time
-                sigma_[k] = np.mean([_cov(Xpseudo_train[sigma_conditions==c, :, t], shrinkage='auto')
+                    # 2. Whitening using the Epoch method
+                    sigma_conditions = cv.labels_pseudo_train[0, :, n_pseudo-1:].flatten()
+                    sigma_ = np.empty((n_conditions, n_sensors, n_sensors))
+                    for k,c in enumerate(np.unique(y)):
+                        # compute sigma for each time point, then average across time
+                        sigma_[k] = np.mean([_cov(Xpseudo_train[sigma_conditions==c, :, t], shrinkage='auto')
                                              for t in range(n_time)], axis=0)
-            sigma = sigma_.mean(axis=0)  # average across conditions
-            sigma_inv = scipy.linalg.fractional_matrix_power(sigma, -0.5)
-            Xpseudo_train = (Xpseudo_train.swapaxes(1, 2) @ sigma_inv).swapaxes(1, 2)
-            Xpseudo_test = (Xpseudo_test.swapaxes(1, 2) @ sigma_inv).swapaxes(1, 2)
+                    sigma = sigma_.mean(axis=0)  # average across conditions
+                    sigma_inv = scipy.linalg.fractional_matrix_power(sigma, -0.5)
+                    Xpseudo_train = (Xpseudo_train.swapaxes(1, 2) @ sigma_inv).swapaxes(1, 2)
+                    Xpseudo_test = (Xpseudo_test.swapaxes(1, 2) @ sigma_inv).swapaxes(1, 2)
 
-            for c1 in range(n_conditions-1):
-                for c2 in range(min(c1 + 1, n_conditions-1), n_conditions):                 
-                        for t in range(n_time):
-                            # 3. Fit the classifier using training data
-                            data_train = Xpseudo_train[cv.ind_pseudo_train[c1, c2], :, t]
-                            svm.fit(data_train, cv.labels_pseudo_train[c1, c2])                            
+                    for c1 in range(n_conditions-1):
+                        for c2 in range(min(c1 + 1, n_conditions-1), n_conditions):
+                                # 3. Fit the classifier using training data
+                                data_train = Xpseudo_train[cv.ind_pseudo_train[c1, c2], :, :]
+                                data_train = np.reshape(data_train, (data_train.shape[0], data_train.shape[1]*data_train.shape[2]), order='F')
+                                svm.fit(data_train, cv.labels_pseudo_train[c1, c2])                            
 
-                            # 4. Compute and store classification accuracies
-                            data_test = Xpseudo_test[cv.ind_pseudo_test[c1, c2], :, t]
-                            result[f, c1, c2, t] = np.mean(svm.predict(data_test) == cv.labels_pseudo_test[c1, c2]) - 0.5                  
+                                for t in range(n_time):
+                                    for c1 in range(n_conditions-1):
+                                        for c2 in range(min(c1 + 1, n_conditions-1), n_conditions):
+                                            # 3. Fit the classifier using training data
+                                            data_train = Xpseudo_train[cv.ind_pseudo_train[c1, c2], :, t]
+                                            svm.fit(data_train, cv.labels_pseudo_train[c1, c2])                            
+
+                                            # 4. Compute and store classification accuracies
+                                            data_test = Xpseudo_test[cv.ind_pseudo_test[c1, c2], :, t]
+                                            result[f, c1, c2, t] = np.mean(svm.predict(data_test) == cv.labels_pseudo_test[c1, c2]) - 0.5                  
 
         # average across permutations
         out.append(result)
@@ -794,116 +799,7 @@ def compute_time(folder, subs, filt, im_times, event_ids, n_perm, n_pseudo):
         np.savez_compressed('temp',results=out)
     return out
 
-def find_folder():
-    import platform
-    if platform.node() == 'aa':
-        infolder = 'C:\\Users\\nemrodov\\Documents\\Ilya_study\\Data'
-        outfolder = 'C:\\Users\\nemrodov\\Documents\\Ilya_study\\Analysis'
-    elif platform.node() == 'DESKTOP-T3QNT8D':
-        infolder = 'E:\\Ilya_study\\\\Data'
-        outfolder = 'E:\\Ilya_study\\Analysis'
-    elif platform.system() == 'Darwin':
-        outfolder = '//Users/dannem/Documents/Ilya_study/Analysis'
-        infolder = '/Users/dannem/Documents/Ilya_study/Data'
-    elif platform.system() == 'Linux':
-        outfolder = '/psyhome6/nemrodov/ilya_study/Analysis'
-        infolder = '/psyhome6/nemrodov/ilya_study/Data'
-    else:
-        infolder = 'F:\\Data'
-        outfolder = 'F:\\EEG_analysis'
-    return (infolder, outfolder)
 
-def load_to_epochs(fnames, event_ids, im_times, filt):
-    import mne
-    import numpy as np
-    import os.path as op
-    infolder, outfolder = find_folder()
-    baseline = (None, 0)
-    
-    #montage = mne.channels.read_montage("standard_1020")
-    raw = []
-    for fname in fnames:
-        fname = op.join(infolder,fname)  
-        raw.append(mne.io.read_raw_bdf(fname, preload=True).filter(filt[0], filt[1], method='iir'))
-    raw = mne.concatenate_raws(raw)
-    events = mne.find_events(raw, initial_event=True, 
-                                     consecutive=True, shortest_event=1)
-    epochs = mne.Epochs(raw, events, event_ids, im_times[0], im_times[1],
-                    baseline=baseline, preload=True)
-    
-    return epochs
-
-def imagery_time(folder, subs, filt, im_times, event_ids, n_perm, n_pseudo, bins, step=1):
-    import numpy as np
-    import mne
-    from mne.time_frequency import tfr_morlet, psd_multitaper, psd_welch
-    import os
-    import scipy
-    from sklearn.discriminant_analysis import _cov
-    from sklearn.svm import SVC
-    from sklearn.naive_bayes import GaussianNB
-    
-    svm = SVC(kernel='linear')
-    CV = ShuffleBinLeaveOneOut
-    out = list()
-    
-    
-    
-    for i,sub in enumerate(subs):
-        fnames = [folder+'/IR_'+str(sub).zfill(2)+'_S01.bdf',folder+'/IR_'+str(sub).zfill(2)+'_S02.bdf']
-        epochs = load_to_epochs(fnames, event_ids, im_times, filt)
-        epochs.drop_channels(['Status']).equalize_event_counts(event_ids=event_ids, method='mintime')
-        X = epochs.get_data()
-        y = epochs.events[:, 2]
-        y = [a-30 for a in y]
-        n_conditions = len(np.unique(y))
-        n_sensors = X.shape[1]
-        n_time = X.shape[2]
-        cv = CV(y, n_iter=n_perm, n_pseudo=n_pseudo)
-        result = np.full((n_perm, n_conditions, n_conditions,n_time), np.nan)
-        
-         
-        for f, (train_indices, test_indices) in enumerate(cv.split(X)):
-            print('\tPermutation %g / %g' % (f + 1, n_perm))
-
-            # 1. Compute pseudo-trials for training and test
-            Xpseudo_train = np.full((len(train_indices), n_sensors, n_time), np.nan)
-            Xpseudo_test = np.full((len(test_indices), n_sensors, n_time), np.nan)
-            for i, ind in enumerate(train_indices):
-                Xpseudo_train[i, :, :] = np.mean(X[ind, :, :], axis=0)
-            for i, ind in enumerate(test_indices):
-                Xpseudo_test[i, :, :] = np.mean(X[ind, :, :], axis=0)
-
-
-            # 2. Whitening using the Epoch method
-            sigma_conditions = cv.labels_pseudo_train[0, :, n_pseudo-1:].flatten()
-            sigma_ = np.empty((n_conditions, n_sensors, n_sensors))
-            for k,c in enumerate(np.unique(y)):
-                # compute sigma for each time point, then average across time
-                sigma_[k] = np.mean([_cov(Xpseudo_train[sigma_conditions==c, :, t], shrinkage='auto')
-                                        for t in range(n_time)], axis=0)
-            sigma = sigma_.mean(axis=0)  # average across conditions
-            sigma_inv = scipy.linalg.fractional_matrix_power(sigma, -0.5)
-            Xpseudo_train = (Xpseudo_train.swapaxes(1, 2) @ sigma_inv).swapaxes(1, 2)
-            Xpseudo_test = (Xpseudo_test.swapaxes(1, 2) @ sigma_inv).swapaxes(1, 2)
-
-            for c1 in range(n_conditions-1):
-                for c2 in range(min(c1 + 1, n_conditions-1), n_conditions):                 
-                        for t in np.arange(0, n_time - bins, step):
-                            # 3. Fit the classifier using training data
-                            data_train = Xpseudo_train[cv.ind_pseudo_train[c1, c2], :, t:t+bins]
-                            data_train = np.reshape(data_train, (data_train.shape[0], data_train.shape[1]*data_train.shape[2]), order='F')
-                            svm.fit(data_train, cv.labels_pseudo_train[c1, c2])                            
-
-                            # 4. Compute and store classification accuracies
-                            data_test = Xpseudo_test[cv.ind_pseudo_test[c1, c2], :, t:t+bins]
-                            data_test = np.reshape(data_test, (data_test.shape[0], data_test.shape[1]*data_test.shape[2]), order='F')
-                            result[f, c1, c2, t] = np.mean(svm.predict(data_test) == cv.labels_pseudo_test[c1, c2]) - 0.5                  
-
-        # average across permutations
-        out.append(result)
-        np.savez_compressed('temp',results=out)
-    return out
 # In[ ]:
 
 
